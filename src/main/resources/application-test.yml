@@ -1,0 +1,29 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+
+  flyway:
+    enabled: false   # Flyway disabled for tests — JPA manages schema
+
+  data:
+    redis:
+      host: localhost
+      port: 6370    # embedded redis port for tests
+
+app:
+  base-url: http://localhost:8080
+  cache:
+    url-ttl-hours: 1
+    click-count-ttl-hours: 1
+  rate-limit:
+    capacity: 100
+    refill-rate: 100
+    window-seconds: 60
