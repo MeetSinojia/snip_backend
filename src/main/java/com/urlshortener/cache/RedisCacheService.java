@@ -78,25 +78,29 @@ public class RedisCacheService {
      * @return true if request is allowed, false if rate limit exceeded
      */
     public boolean isAllowed(String ip) {
-        String key = RATE_LIMIT_KEY_PREFIX + ip;
+    String key = RATE_LIMIT_KEY_PREFIX + ip;
 
-        Long remaining = redisTemplate.opsForValue().decrement(key);
+    String value = redisTemplate.opsForValue().get(key);
 
-        if (remaining == null) {
-            // Key doesn't exist — initialize bucket at capacity - 1 (we already consumed one token)
-            redisTemplate.opsForValue().set(key, String.valueOf(rateLimitCapacity - 1),
-                    rateLimitWindowSeconds, TimeUnit.SECONDS);
-            return true;
-        }
-
-        if (remaining < 0) {
-            // Bucket exhausted — reset to 0 to prevent unbounded negative values
-            redisTemplate.opsForValue().set(key, "0",
-                    rateLimitWindowSeconds, TimeUnit.SECONDS);
-            log.warn("Rate limit exceeded for IP={}", ip);
-            return false;
-        }
-
+    if (value == null) {
+        // First request → initialize bucket
+        redisTemplate.opsForValue().set(
+                key,
+                String.valueOf(rateLimitCapacity - 1),
+                rateLimitWindowSeconds,
+                TimeUnit.SECONDS
+        );
         return true;
     }
-}
+
+    long remaining = Long.parseLong(value);
+
+    if (remaining <= 0) {
+        log.warn("Rate limit exceeded for IP={}", ip);
+        return false;
+    }
+
+    // Decrement token
+    redisTemplate.opsForValue().decrement(key);
+    return true;
+}}
