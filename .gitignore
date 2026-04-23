@@ -42,17 +42,7 @@ logs/
 .DS_Store
 Thumbs.db
 
-# === Env / Config ===
 
-.env
-.env.*
-application-local.yml
-application-dev.yml
-
-# === Docker ===
-
-*.pid
-*.seed
 
 # === Test Reports ===
 

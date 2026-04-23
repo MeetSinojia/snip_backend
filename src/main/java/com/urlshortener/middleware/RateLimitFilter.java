@@ -16,6 +16,20 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 
+/**
+ * RateLimitFilter — UPDATED
+ *
+ * Excluded paths (no rate limiting):
+ *   /actuator, /swagger-ui, /api-docs           — infra
+ *   /api/debug/rate-status                       — console reads
+ *   /api/debug/reset-rate-limit                  — reset action
+ *   /api/debug/config                            — NEW: config fetch (never rate-limited)
+ *
+ * NOT excluded — goes through real rate limiter:
+ *   /api/debug/simulate-request                  — simulator needs real 429s
+ *
+ * Replace at: src/main/java/com/urlshortener/middleware/RateLimitFilter.java
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -29,8 +43,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
 
-        // Skip rate limiting for actuator and swagger endpoints
         String path = request.getRequestURI();
+
         if (isExcluded(path)) {
             filterChain.doFilter(request, response);
             return;
@@ -40,20 +54,16 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
         if (!cacheService.isAllowed(ip)) {
             log.warn("Rate limit exceeded for IP={} path={}", ip, path);
-            writeRateLimitResponse(response);
+            writeRateLimitResponse(response, ip);
             return;
         }
 
         filterChain.doFilter(request, response);
     }
 
-    /**
-     * Resolves real client IP, accounting for reverse proxies and load balancers.
-     */
     private String resolveClientIp(HttpServletRequest request) {
         String forwarded = request.getHeader("X-Forwarded-For");
         if (forwarded != null && !forwarded.isBlank()) {
-            // X-Forwarded-For may contain a chain: "client, proxy1, proxy2"
             return forwarded.split(",")[0].trim();
         }
         return request.getRemoteAddr();
@@ -62,12 +72,18 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private boolean isExcluded(String path) {
         return path.startsWith("/actuator")
                 || path.startsWith("/swagger-ui")
-                || path.startsWith("/api-docs");
+                || path.startsWith("/api-docs")
+                || path.equals("/api/debug/rate-status")
+                || path.equals("/api/debug/reset-rate-limit")
+                || path.equals("/api/debug/config");        // ← NEW
     }
 
-    private void writeRateLimitResponse(HttpServletResponse response) throws IOException {
+    private void writeRateLimitResponse(HttpServletResponse response, String ip)
+            throws IOException {
         response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setHeader("X-RateLimit-Reset", "60");
+        response.setHeader("X-RateLimit-IP", ip);
 
         ErrorResponse error = ErrorResponse.of(429, "Rate limit exceeded. Please try again later.");
         response.getWriter().write(objectMapper.writeValueAsString(error));

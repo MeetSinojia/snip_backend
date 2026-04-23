@@ -1,175 +1,137 @@
-# URL Shortener
+# URL Shortener Backend
 
-A production-grade distributed URL shortener built with **Java Spring Boot**, **Redis** caching, and **PostgreSQL** persistence.
-
-## Architecture
-
-```
-Client
-  │
-  ▼
-RateLimitFilter (token bucket per IP via Redis)
-  │
-  ▼
-UrlController / AnalyticsController
-  │
-  ▼
-UrlService (cache-aside pattern)
-  ├── Redis  ← cache hit (fast path, ~1ms)
-  └── PostgreSQL ← cache miss (fallback, ~5ms)
-```
-
-### Cache-aside flow
-1. `GET /{shortCode}` hits Redis first
-2. **Cache hit** → return URL + increment click counter (atomic INCR)
-3. **Cache miss** → query PostgreSQL → re-populate Redis with TTL → return URL
-
-### Rate limiting
-Token bucket implemented in Redis per client IP:
-- Default: 10 requests per 60 seconds per IP
-- Exceeding limit returns `HTTP 429`
-- Configurable via `application.yml`
+A simple URL shortener service built using Spring Boot with Redis caching and rate limiting.
 
 ---
 
-## Tech Stack
+## 🚀 Prerequisites
 
-| Layer | Technology |
-|---|---|
-| Backend | Java 17, Spring Boot 3.2 |
-| Cache | Redis 7 (cache-aside + token bucket) |
-| Database | PostgreSQL 16 |
-| Migrations | Flyway |
-| Docs | Springdoc OpenAPI (Swagger UI) |
-| Containerization | Docker, Docker Compose |
-| Testing | JUnit 5, Mockito, @WebMvcTest |
+Make sure the following are installed:
+
+* Java 17+
+* Maven
+* Docker & Docker Compose
 
 ---
 
-## API Endpoints
+## 🐳 Start Required Services
 
-### Shorten a URL
-```
-POST /api/shorten
-Content-Type: application/json
+This project uses Redis. Start it using Docker:
 
-{
-  "originalUrl": "https://example.com/very/long/path",
-  "expiryHours": 48
-}
-```
-
-Response `201 Created`:
-```json
-{
-  "shortCode": "abcdef",
-  "shortUrl": "http://localhost:8080/abcdef",
-  "originalUrl": "https://example.com/very/long/path",
-  "createdAt": "2024-01-01T10:00:00",
-  "expiresAt": "2024-01-03T10:00:00"
-}
-```
-
-### Redirect
-```
-GET /{shortCode}
-→ HTTP 302 Location: https://example.com/very/long/path
-```
-
-### Analytics
-```
-GET /api/analytics/{shortCode}
-```
-
-Response `200 OK`:
-```json
-{
-  "shortCode": "abcdef",
-  "originalUrl": "https://example.com/very/long/path",
-  "totalClicks": 42,
-  "createdAt": "2024-01-01T10:00:00",
-  "expiresAt": "2024-01-03T10:00:00"
-}
-```
-
-### Deactivate
-```
-DELETE /api/urls/{shortCode}
-→ HTTP 204 No Content
-```
-
----
-
-## Running Locally
-
-### Prerequisites
-- Docker & Docker Compose
-- Java 17+ (for local development without Docker)
-
-### With Docker Compose (recommended)
 ```bash
-git clone https://github.com/MeetSinojia/url-shortener
-cd url-shortener
-
-docker-compose up --build
+docker-compose up -d
 ```
 
-App runs at `http://localhost:8080`
-Swagger UI at `http://localhost:8080/swagger-ui.html`
+To verify:
 
-### Without Docker
 ```bash
-# Start dependencies
-docker run -d -p 5432:5432 -e POSTGRES_DB=urlshortener -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres postgres:16-alpine
-docker run -d -p 6379:6379 redis:7-alpine
-
-# Run app
-./mvnw spring-boot:run
+docker ps
 ```
 
 ---
 
-## Running Tests
+## 🛠️ Build the Project
+
 ```bash
-./mvnw test
-```
-
-Tests use H2 in-memory database and embedded Redis — no external dependencies required.
-
----
-
-## Project Structure
-
-```
-src/main/java/com/urlshortener/
-├── controller/        # REST endpoints
-├── service/           # Business logic + Base62 encoding
-├── repository/        # JPA repository (PostgreSQL)
-├── cache/             # Redis caching + rate limiting
-├── middleware/        # Request logging + rate limit filter
-├── model/             # Entities + DTOs
-├── exception/         # Custom exceptions + global handler
-└── config/            # App config + Swagger
-
-src/main/resources/
-├── application.yml
-├── application-test.yml
-└── db/migration/      # Flyway SQL migrations
+mvn clean install
 ```
 
 ---
 
-## Configuration
+## ▶️ Run the Application
 
-Key settings in `application.yml`:
+### Option 1: Using Maven
 
-```yaml
-app:
-  base-url: http://localhost:8080
-  cache:
-    url-ttl-hours: 24        # How long URLs stay in Redis
-    click-count-ttl-hours: 168
-  rate-limit:
-    capacity: 10             # Max requests per window
-    window-seconds: 60       # Window duration
+```bash
+mvn spring-boot:run
 ```
+
+### Option 2: Using JAR
+
+```bash
+java -jar target/<your-jar-name>.jar
+```
+
+---
+
+## 🌐 Application URLs
+
+* Base URL:
+  http://localhost:8080
+
+* Swagger UI (if enabled):
+  http://localhost:8080/swagger-ui/
+
+---
+
+## 📌 API Usage
+
+### 1. Create Short URL
+
+```bash
+curl -X POST http://localhost:8080/api/url/shorten \
+-H "Content-Type: application/json" \
+-d '{"originalUrl":"https://google.com"}'
+```
+
+---
+
+### 2. Redirect to Original URL
+
+Open in browser:
+
+```
+http://localhost:8080/{shortCode}
+```
+
+Example:
+
+```
+http://localhost:8080/abc123
+```
+
+---
+
+## ⚠️ Notes
+
+* Do not open `http://localhost:8080/` directly (no frontend is configured).
+* Ensure Redis is running before starting the application.
+* Port used: **8080**
+
+---
+
+## 🧪 Troubleshooting
+
+### Redis not connected
+
+```bash
+docker ps
+```
+
+### Port already in use
+
+```bash
+lsof -i :8080
+kill -9 <PID>
+```
+
+### Build issues
+
+```bash
+mvn clean install -U
+```
+
+---
+
+## 📦 Tech Stack
+
+* Spring Boot
+* Redis
+* Maven
+* Docker
+
+---
+
+## 👨‍💻 Author
+
+Meet Sinojia

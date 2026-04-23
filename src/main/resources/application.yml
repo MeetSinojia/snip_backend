@@ -39,8 +39,8 @@ app:
     url-ttl-hours: 24
     click-count-ttl-hours: 168   # 7 days
   rate-limit:
-    capacity: 10                 # max tokens per bucket
-    refill-rate: 10              # tokens refilled per minute
+    capacity: 200                 # max tokens per bucket
+    refill-rate: 100              # tokens refilled per minute
     window-seconds: 60
 
 springdoc:

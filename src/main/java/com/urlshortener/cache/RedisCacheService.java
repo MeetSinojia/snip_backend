@@ -6,9 +6,21 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * RedisCacheService  — UPDATED VERSION
+ *
+ * Changes vs original:
+ *   • Added getRateLimitStatus(ip) — returns bucket state for the console UI
+ *   • Added resetRateLimit(ip)    — clears bucket so devs can re-run the demo
+ *
+ * Replace the existing file at:
+ *   src/main/java/com/urlshortener/cache/RedisCacheService.java
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -56,7 +68,6 @@ public class RedisCacheService {
         String key = CLICK_COUNT_PREFIX + shortCode;
         Long count = redisTemplate.opsForValue().increment(key);
 
-        // Set TTL only on first increment (when count == 1)
         if (count != null && count == 1L) {
             redisTemplate.expire(key, clickCountTtlHours, TimeUnit.HOURS);
         }
@@ -74,33 +85,67 @@ public class RedisCacheService {
     /**
      * Checks whether the given IP has remaining tokens in its bucket.
      * Uses Redis DECR with expiry to implement a fixed-window token bucket.
-     *
-     * @return true if request is allowed, false if rate limit exceeded
      */
     public boolean isAllowed(String ip) {
-    String key = RATE_LIMIT_KEY_PREFIX + ip;
+        String key = RATE_LIMIT_KEY_PREFIX + ip;
+        String value = redisTemplate.opsForValue().get(key);
 
-    String value = redisTemplate.opsForValue().get(key);
+        if (value == null) {
+            redisTemplate.opsForValue().set(
+                    key,
+                    String.valueOf(rateLimitCapacity - 1),
+                    rateLimitWindowSeconds,
+                    TimeUnit.SECONDS
+            );
+            return true;
+        }
 
-    if (value == null) {
-        // First request → initialize bucket
-        redisTemplate.opsForValue().set(
-                key,
-                String.valueOf(rateLimitCapacity - 1),
-                rateLimitWindowSeconds,
-                TimeUnit.SECONDS
-        );
+        long remaining = Long.parseLong(value);
+
+        if (remaining <= 0) {
+            log.warn("Rate limit exceeded for IP={}", ip);
+            return false;
+        }
+
+        redisTemplate.opsForValue().decrement(key);
         return true;
     }
 
-    long remaining = Long.parseLong(value);
+    // ── NEW: Debug / Console helpers ─────────────────────────────────────────
 
-    if (remaining <= 0) {
-        log.warn("Rate limit exceeded for IP={}", ip);
-        return false;
+    /**
+     * Returns a rich snapshot of the token bucket for the given IP.
+     * Called by the frontend Redis Console panel.
+     */
+    public Map<String, Object> getRateLimitStatus(String ip) {
+        String key = RATE_LIMIT_KEY_PREFIX + ip;
+        String value = redisTemplate.opsForValue().get(key);
+        Long ttlSeconds = redisTemplate.getExpire(key, TimeUnit.SECONDS);
+
+        long remaining  = value != null ? Long.parseLong(value) : rateLimitCapacity;
+        long used       = rateLimitCapacity - remaining;
+        long ttl        = ttlSeconds != null && ttlSeconds >= 0 ? ttlSeconds : rateLimitWindowSeconds;
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("ip",               ip);
+        result.put("redisKey",         key);
+        result.put("tokensRemaining",  remaining);
+        result.put("tokensUsed",       used);
+        result.put("capacity",         rateLimitCapacity);
+        result.put("windowSeconds",    rateLimitWindowSeconds);
+        result.put("ttlSeconds",       ttl);
+        result.put("bucketExists",     value != null);
+        result.put("limitExceeded",    remaining <= 0);
+        return result;
     }
 
-    // Decrement token
-    redisTemplate.opsForValue().decrement(key);
-    return true;
-}}
+    /**
+     * Deletes the rate-limit bucket for the given IP.
+     * Used by the "Reset" button in the Rate Limit Simulator panel.
+     */
+    public void resetRateLimit(String ip) {
+        String key = RATE_LIMIT_KEY_PREFIX + ip;
+        redisTemplate.delete(key);
+        log.info("Rate limit reset for IP={}", ip);
+    }
+}
