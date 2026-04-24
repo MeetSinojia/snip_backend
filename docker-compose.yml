@@ -1,127 +1,32 @@
-version: "3.9"
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  URL Shortener — Full Infrastructure
-#  2 PostgreSQL shards × (primary + replica) + Redis with volatile-lfu
-#  Ports: 5432/5433 shard0, 5434/5435 shard1, 6379 Redis, 8080 app
-# ─────────────────────────────────────────────────────────────────────────────
+version: "3.8"
 
 services:
-
-  # ── Shard 0 Primary ──────────────────────────────────────────────────────────
-  db-shard0-primary:
-    image: postgres:16-alpine
-    container_name: db-shard0-primary
-    environment:
-      POSTGRES_DB: urlshortener_shard0
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    command: postgres -c wal_level=replica -c max_wal_senders=3 -c hot_standby=on
-    ports: ["5432:5432"]
-    volumes: [shard0_primary_data:/var/lib/postgresql/data]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d urlshortener_shard0"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ── Shard 0 Replica ──────────────────────────────────────────────────────────
-  db-shard0-replica:
-    image: postgres:16-alpine
-    container_name: db-shard0-replica
-    environment:
-      POSTGRES_DB: urlshortener_shard0
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports: ["5433:5432"]
-    volumes: [shard0_replica_data:/var/lib/postgresql/data]
-    depends_on: {db-shard0-primary: {condition: service_healthy}}
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d urlshortener_shard0"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ── Shard 1 Primary ──────────────────────────────────────────────────────────
-  db-shard1-primary:
-    image: postgres:16-alpine
-    container_name: db-shard1-primary
-    environment:
-      POSTGRES_DB: urlshortener_shard1
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    command: postgres -c wal_level=replica -c max_wal_senders=3 -c hot_standby=on
-    ports: ["5434:5432"]
-    volumes: [shard1_primary_data:/var/lib/postgresql/data]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d urlshortener_shard1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ── Shard 1 Replica ──────────────────────────────────────────────────────────
-  db-shard1-replica:
-    image: postgres:16-alpine
-    container_name: db-shard1-replica
-    environment:
-      POSTGRES_DB: urlshortener_shard1
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports: ["5435:5432"]
-    volumes: [shard1_replica_data:/var/lib/postgresql/data]
-    depends_on: {db-shard1-primary: {condition: service_healthy}}
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d urlshortener_shard1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ── Redis — volatile-lfu eviction ─────────────────────────────────────────────
-  redis:
-    image: redis:7.2-alpine
-    container_name: redis
-    command: >
-      redis-server
-        --maxmemory 256mb
-        --maxmemory-policy volatile-lfu
-        --lfu-decay-time 10
-        --lfu-log-factor 5
-        --appendonly yes
-        --appendfsync everysec
-    ports: ["6379:6379"]
-    volumes: [redis_data:/data]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
-  # ── Spring Boot App ───────────────────────────────────────────────────────────
   app:
     build: .
-    container_name: snip-backend
+    container_name: url-shortener-app
+    ports:
+      - "8080:8080"
     environment:
-      APP_DB_SHARD0_PRIMARY_URL: jdbc:postgresql://db-shard0-primary:5432/urlshortener_shard0
-      APP_DB_SHARD0_REPLICA_URL:  jdbc:postgresql://db-shard0-replica:5432/urlshortener_shard0
-      APP_DB_SHARD1_PRIMARY_URL: jdbc:postgresql://db-shard1-primary:5432/urlshortener_shard1
-      APP_DB_SHARD1_REPLICA_URL:  jdbc:postgresql://db-shard1-replica:5432/urlshortener_shard1
-      APP_DB_SHARD0_USERNAME: postgres
-      APP_DB_SHARD0_PASSWORD: postgres
-      APP_DB_SHARD1_USERNAME: postgres
-      APP_DB_SHARD1_PASSWORD: postgres
-      SPRING_DATA_REDIS_HOST: redis
-      APP_SNOWFLAKE_NODE_ID: 0
-      APP_BASE_URL: http://localhost:8080
-    ports: ["8080:8080"]
-    depends_on:
-      db-shard0-primary: {condition: service_healthy}
-      db-shard1-primary: {condition: service_healthy}
-      redis: {condition: service_healthy}
-    restart: on-failure
+      DB_URL: jdbc:postgresql://ep-purple-flower-amlftox4.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require
+      DB_USERNAME: neondb_owner
+      DB_PASSWORD: npg_dOh1uXGp3Iwl
 
-volumes:
-  shard0_primary_data:
-  shard0_replica_data:
-  shard1_primary_data:
-  shard1_replica_data:
-  redis_data:
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+
+  postgres:
+    image: postgres:15
+    container_name: postgres-db
+    restart: always
+    environment:
+      POSTGRES_DB: urlshortener
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    container_name: redis-cache
+    ports:
+      - "6379:6379"

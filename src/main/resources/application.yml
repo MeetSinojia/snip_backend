@@ -2,105 +2,93 @@ spring:
   application:
     name: url-shortener
 
-  # spring.datasource is intentionally omitted — DataSourceConfig.java
-  # manually configures all shard DataSources (see app.db.* section below).
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      data-source-properties:
+        sslmode: require
 
   jpa:
     hibernate:
       ddl-auto: validate
-    show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
 
+  # ✅ After (env vars)
   data:
     redis:
-      host: localhost
-      port: 6379
-      timeout: 2000ms
-      lettuce:
-        pool:
-          max-active: 10
-          max-idle: 5
-          min-idle: 1
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: ${REDIS_SSL:false}
 
-  # Flyway autoconfiguration is excluded — DataSourceConfig runs Flyway
-  # programmatically on each shard's primary DataSource at startup.
-  flyway:
-    enabled: false
-
+# ─────────────────────────────────────────────
+# 🔥 DATABASE CONFIG (CURRENT: FREE DEPLOYMENT)
+# ─────────────────────────────────────────────
 app:
-  base-url: http://localhost:8080
+  base-url: ${APP_BASE_URL:http://localhost:8080}
 
-  # ── Database sharding ──────────────────────────────────────────────────────
-  # Each shard has an independent PostgreSQL primary + read replica.
-  # ShardingService routes writes/reads based on hash(shortCode) % shard-count.
-  #
-  # For local dev, all shards can point to the same DB instance with
-  # different database names (urlshortener_shard0, urlshortener_shard1).
-  # In production, each entry maps to a separate PostgreSQL host.
   db:
-    shard-count: 2
-    pool:
-      max-size: 10
-      min-idle: 2
+    # ✅ FREE DEPLOYMENT MODE
+    # Single DB used for both primary & replica
+    shard-count: 1
 
     shard0:
-      primary-url: jdbc:postgresql://localhost:5436/urlshortener_shard0
-      replica-url:  jdbc:postgresql://localhost:5437/urlshortener_shard0
-      username: postgres
-      password: postgres
+      primary-url: ${DB_URL}
+      replica-url: ${DB_URL}   # same DB (no real replica)
+      username: ${DB_USERNAME}
+      password: ${DB_PASSWORD}
 
-    shard1:
-      primary-url: jdbc:postgresql://localhost:5434/urlshortener_shard1
-      replica-url:  jdbc:postgresql://localhost:5435/urlshortener_shard1
-      username: postgres
-      password: postgres
+    # ─────────────────────────────────────────
+    # 🚀 PRODUCTION SETUP (COMMENTED FOR FUTURE)
+    # ─────────────────────────────────────────
+    # shard-count: 2
+    #
+    # shard0:
+    #   primary-url: jdbc:postgresql://shard0-primary:5432/urlshortener_shard0
+    #   replica-url: jdbc:postgresql://shard0-replica:5432/urlshortener_shard0
+    #   username: postgres
+    #   password: postgres
+    #
+    # shard1:
+    #   primary-url: jdbc:postgresql://shard1-primary:5432/urlshortener_shard1
+    #   replica-url: jdbc:postgresql://shard1-replica:5432/urlshortener_shard1
+    #   username: postgres
+    #   password: postgres
 
-  # ── Snowflake ID generation ────────────────────────────────────────────────
-  # node-id uniquely identifies this application instance (0–1023).
-  # In a multi-instance deployment, each pod/container must have a unique node-id.
-  # Use a ConfigMap, Helm value, or environment variable to differentiate:
-  #   JAVA_OPTS: -Dapp.snowflake.node-id=1
+  # ── Snowflake ID ───────────────────────────
   snowflake:
     node-id: 0
 
-  # ── Redis cache TTLs ───────────────────────────────────────────────────────
+  # ── Cache TTL ──────────────────────────────
   cache:
     url-ttl-hours: 24
-    click-count-ttl-hours: 168   # 7 days
+    click-count-ttl-hours: 168
 
-  # ── Redis eviction policy ─────────────────────────────────────────────────
-  # volatile-lfu: evict TTL-bearing keys by Least Frequently Used order.
-  # Applied via CONFIG SET at startup in RedisEvictionConfig.java.
-  # See Redis docs for alternatives: allkeys-lru, volatile-lru, allkeys-lfu
+  # ── Redis Config ───────────────────────────
   redis:
     eviction-policy: volatile-lfu
     max-memory: 256mb
 
-  # ── Rate limiting ──────────────────────────────────────────────────────────
+  # ── Rate Limiting ──────────────────────────
   rate-limit:
     capacity: 200
     refill-rate: 100
     window-seconds: 60
 
-springdoc:
-  api-docs:
-    path: /api-docs
-  swagger-ui:
-    path: /swagger-ui.html
-
+# ─────────────────────────────────────────────
+# 📊 Monitoring / Logging
+# ─────────────────────────────────────────────
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics
-  endpoint:
-    health:
-      show-details: always
 
 logging:
   level:
     com.urlshortener: DEBUG
-    org.springframework.data.redis: INFO
