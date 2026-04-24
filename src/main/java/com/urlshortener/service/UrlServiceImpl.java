@@ -6,12 +6,16 @@ import com.urlshortener.model.Url;
 import com.urlshortener.model.UrlRequest;
 import com.urlshortener.model.UrlResponse;
 import com.urlshortener.repository.UrlRepository;
+import com.urlshortener.sharding.ShardContext;
+import com.urlshortener.sharding.ShardingService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 
@@ -20,9 +24,12 @@ import java.time.LocalDateTime;
 @RequiredArgsConstructor
 public class UrlServiceImpl implements UrlService {
 
-    private final UrlRepository      urlRepository;
-    private final RedisCacheService  cacheService;
-    private final Base62Service      base62Service;
+    private final UrlRepository             urlRepository;
+    private final RedisCacheService         cacheService;
+    private final Base62Service             base62Service;
+    private final SnowflakeIdGenerator      snowflakeIdGenerator;
+    private final ShardingService           shardingService;
+    private final PlatformTransactionManager txManager;
 
     @Value("${app.base-url}")
     private String baseUrl;
@@ -31,92 +38,125 @@ public class UrlServiceImpl implements UrlService {
     private long defaultTtlHours;
 
     // ── Shorten ──────────────────────────────────────────────────────────────
+    //
+    // Old flow (2 saves):  INSERT "pending" → get ID → UPDATE shortCode
+    // New flow (1 save):   Snowflake ID → Base62 shortCode → shard → INSERT
+    //
+    // ShardContext MUST be set before TransactionTemplate.execute() is called,
+    // because AbstractRoutingDataSource.determineCurrentLookupKey() fires when
+    // the connection is acquired at the start of the transaction.
 
     @Override
-    @Transactional
     public UrlResponse shorten(UrlRequest request) {
-        LocalDateTime expiresAt = resolveExpiry(request.getExpiryHours());
+        long id          = snowflakeIdGenerator.nextId();
+        String shortCode = base62Service.encode(id);
+        int shardIndex   = shardingService.getShardIndex(shortCode);
 
-        // Persist to PostgreSQL first to get the auto-generated ID
-        Url url = Url.builder()
-                .originalUrl(request.getOriginalUrl())
-                .shortCode("pending")   // temporary placeholder before ID is known
-                .expiresAt(expiresAt)
-                .build();
+        ShardContext.set(shardIndex);
+        try {
+            TransactionTemplate tx = new TransactionTemplate(txManager);
+            Url saved = tx.execute(status -> {
+                Url url = Url.builder()
+                        .id(id)
+                        .originalUrl(request.getOriginalUrl())
+                        .shortCode(shortCode)
+                        .expiresAt(resolveExpiry(request.getExpiryHours()))
+                        .build();
+                return urlRepository.save(url);
+            });
 
-        url = urlRepository.save(url);
+            cacheService.cacheUrl(shortCode, request.getOriginalUrl());
+            log.info("Shortened URL id={} shortCode={} shard={}", id, shortCode, shardIndex);
+            return buildResponse(saved);
 
-        // Encode the DB-generated ID to Base62 short code
-        String shortCode = base62Service.encode(url.getId());
-        url.setShortCode(shortCode);
-        url = urlRepository.save(url);
-
-        // Populate Redis cache so first redirect is instant
-        cacheService.cacheUrl(shortCode, request.getOriginalUrl());
-
-        log.info("Shortened URL id={} shortCode={} expiresAt={}", url.getId(), shortCode, expiresAt);
-
-        return buildResponse(url);
+        } finally {
+            ShardContext.clear();
+        }
     }
 
     // ── Resolve ──────────────────────────────────────────────────────────────
 
     @Override
-    @Transactional(readOnly = true)
     public String resolve(String shortCode) {
-        // 1. Cache hit — fast path
+        // Fast path: Redis HIT — no DB, no shard context needed
         var cached = cacheService.getCachedUrl(shortCode);
         if (cached.isPresent()) {
             cacheService.incrementClickCount(shortCode);
-            log.debug("Cache HIT for shortCode={}", shortCode);
+            log.debug("Cache HIT shortCode={}", shortCode);
             return cached.get();
         }
 
-        // 2. Cache miss — query PostgreSQL
-        log.debug("Cache MISS for shortCode={} — querying DB", shortCode);
-        Url url = urlRepository.findByShortCodeAndIsActiveTrue(shortCode)
-                .orElseThrow(() -> new UrlNotFoundException(shortCode));
+        // Slow path: query correct shard REPLICA (readOnly=true)
+        log.debug("Cache MISS shortCode={} → querying replica", shortCode);
+        int shardIndex = shardingService.getShardIndex(shortCode);
+        log.info("SHORTEN → shortCode={} shard={}", shortCode, shardIndex);
+        ShardContext.set(shardIndex);
+        try {
+            TransactionTemplate tx = new TransactionTemplate(txManager);
+            tx.setReadOnly(true);  // ShardRoutingDataSource routes to replica
+            tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
 
-        // Guard: treat expired URLs as not found
-        if (url.isExpired()) {
-            log.warn("Attempted access to expired URL shortCode={}", shortCode);
-            throw new UrlNotFoundException(shortCode);
+            String originalUrl = tx.execute(status -> {
+                Url url = urlRepository.findByShortCodeAndIsActiveTrue(shortCode)
+                        .orElseThrow(() -> new UrlNotFoundException(shortCode));
+
+                if (url.isExpired()) {
+                    log.warn("Expired URL accessed shortCode={}", shortCode);
+                    throw new UrlNotFoundException(shortCode);
+                }
+                return url.getOriginalUrl();
+            });
+
+            cacheService.cacheUrl(shortCode, originalUrl);   // cache-aside refill
+            cacheService.incrementClickCount(shortCode);
+            return originalUrl;
+
+        } finally {
+            ShardContext.clear();
         }
-
-        // 3. Re-populate cache (cache-aside)
-        cacheService.cacheUrl(shortCode, url.getOriginalUrl());
-        cacheService.incrementClickCount(shortCode);
-
-        return url.getOriginalUrl();
     }
 
     // ── Deactivate ────────────────────────────────────────────────────────────
 
     @Override
-    @Transactional
     public void deactivate(String shortCode) {
-        Url url = urlRepository.findByShortCodeAndIsActiveTrue(shortCode)
-                .orElseThrow(() -> new UrlNotFoundException(shortCode));
+        int shardIndex = shardingService.getShardIndex(shortCode);
+        ShardContext.set(shardIndex);
+        try {
+            TransactionTemplate tx = new TransactionTemplate(txManager);
+            tx.execute(status -> {
+                Url url = urlRepository.findByShortCodeAndIsActiveTrue(shortCode)
+                        .orElseThrow(() -> new UrlNotFoundException(shortCode));
+                url.setIsActive(false);
+                urlRepository.save(url);
+                return null;
+            });
 
-        url.setIsActive(false);
-        urlRepository.save(url);
-        cacheService.evictUrl(shortCode);
+            cacheService.evictUrl(shortCode);
+            log.info("Deactivated shortCode={} shard={}", shortCode, shardIndex);
 
-        log.info("Deactivated URL shortCode={}", shortCode);
+        } finally {
+            ShardContext.clear();
+        }
     }
 
-    // ── Scheduled cleanup ─────────────────────────────────────────────────────
+    // ── Scheduled cleanup across ALL shards ──────────────────────────────────
 
-    /**
-     * Runs every hour to soft-delete expired URLs in bulk.
-     * Keeps the DB clean without impacting request latency.
-     */
     @Scheduled(fixedRateString = "PT1H")
-    @Transactional
     public void cleanupExpiredUrls() {
-        int deactivated = urlRepository.deactivateExpiredUrls(LocalDateTime.now());
-        if (deactivated > 0) {
-            log.info("Cleanup job deactivated {} expired URLs", deactivated);
+        for (int shard = 0; shard < shardingService.getShardCount(); shard++) {
+            final int shardIndex = shard;
+            ShardContext.set(shardIndex);
+            try {
+                TransactionTemplate tx = new TransactionTemplate(txManager);
+                Integer count = tx.execute(status ->
+                        urlRepository.deactivateExpiredUrls(LocalDateTime.now()));
+                if (count != null && count > 0) {
+                    log.info("Cleanup: deactivated {} expired URLs on shard={}", count, shardIndex);
+                }
+            } finally {
+                ShardContext.clear();
+            }
         }
     }
 

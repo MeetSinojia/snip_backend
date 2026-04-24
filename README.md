@@ -1,137 +1,337 @@
-# URL Shortener Backend
+---
 
-A simple URL shortener service built using Spring Boot with Redis caching and rate limiting.
+# 🚀 URL Shortener Backend — Scalable System Design
+
+> A production-style URL shortener built with **Spring Boot**, focused on **scalability, performance, and real-world system design**.
+
+💡 This project goes beyond CRUD by implementing:
+
+* Database **sharding**
+* **Read replicas**
+* Redis caching with **LFU eviction**
+* **Distributed ID generation**
 
 ---
 
-## 🚀 Prerequisites
+# 🧠 System Architecture
 
-Make sure the following are installed:
-
-* Java 17+
-* Maven
-* Docker & Docker Compose
-
----
-
-## 🐳 Start Required Services
-
-This project uses Redis. Start it using Docker:
-
-```bash
-docker-compose up -d
-```
-
-To verify:
-
-```bash
-docker ps
+```mermaid
+flowchart TD
+    A[Client] --> B[NGINX Load Balancer]
+    B --> C[Spring Boot App]
+    C --> D[Shard Router]
+    D --> E[Primary DB]
+    D --> F[Replica DB]
+    C --> G[Redis Cache]
 ```
 
 ---
 
-## 🛠️ Build the Project
+# ⚙️ Core Features
 
-```bash
-mvn clean install
+### 🔗 URL Shortening
+
+* Converts long URLs into short codes
+* Stored in distributed DB
+* Designed for scalability
+
+---
+
+### 🔁 Redirection
+
+* Resolves shortCode → original URL
+* Uses Redis for ⚡ low-latency lookup
+
+---
+
+### 📊 Analytics
+
+* Tracks click counts
+* Stored with TTL (auto-expiring)
+
+---
+
+# 🗄️ Database Architecture (PostgreSQL)
+
+---
+
+## 🧩 Sharding (Horizontal Scaling)
+
+```text
+shard = hash(shortCode) % shardCount
+```
+
+✔ Even distribution
+✔ Scales with traffic
+
+---
+
+## 🔁 Primary–Replica Model
+
+```text
+Primary → Writes
+Replica → Reads
+```
+
+### 🚀 Why this matters:
+
+* Faster reads
+* Reduced DB load
+* Better scalability
+
+---
+
+## 🔀 Read/Write Routing
+
+| Operation | Annotation                        | DB      |
+| --------- | --------------------------------- | ------- |
+| Write     | `@Transactional`                  | Primary |
+| Read      | `@Transactional(readOnly = true)` | Replica |
+
+👉 Handled via `ShardRoutingDataSource`
+
+---
+
+## ⚡ Connection Pooling
+
+* HikariCP used
+* Separate pools per:
+
+  * shard
+  * role (primary/replica)
+
+---
+
+## 🧱 Schema Management
+
+* Flyway migrations
+* Runs per shard
+* Keeps schema consistent
+
+---
+
+# ⚡ Redis Caching Layer
+
+---
+
+## 🔄 Cache Flow (Cache-Aside)
+
+```text
+1. Check Redis
+2. If miss → DB
+3. Store back in Redis
 ```
 
 ---
 
-## ▶️ Run the Application
+## 🗂️ Stored Data
 
-### Option 1: Using Maven
-
-```bash
-mvn spring-boot:run
-```
-
-### Option 2: Using JAR
-
-```bash
-java -jar target/<your-jar-name>.jar
+```text
+url:{shortCode}     → original URL
+clicks:{shortCode}  → analytics
+rate:{ip}           → rate limiting
 ```
 
 ---
 
-## 🌐 Application URLs
+## ⏳ TTL Strategy
 
-* Base URL:
-  http://localhost:8080
-
-* Swagger UI (if enabled):
-  http://localhost:8080/swagger-ui/
-
----
-
-## 📌 API Usage
-
-### 1. Create Short URL
-
-```bash
-curl -X POST http://localhost:8080/api/url/shorten \
--H "Content-Type: application/json" \
--d '{"originalUrl":"https://google.com"}'
-```
+| Data       | TTL    |
+| ---------- | ------ |
+| URL        | 24h    |
+| Clicks     | 7 days |
+| Rate Limit | 60 sec |
 
 ---
 
-### 2. Redirect to Original URL
+## 🔥 Eviction Strategy
 
-Open in browser:
-
-```
-http://localhost:8080/{shortCode}
+```text
+volatile-lfu
 ```
 
-Example:
+### 🧠 Meaning:
 
+* Only TTL keys are evicted
+* Least Frequently Used removed first
+
+---
+
+## 💡 Why LFU (important)
+
+```text
+Few hot links 🔥
+Many cold links ❄️
 ```
-http://localhost:8080/abc123
+
+👉 LFU keeps hot links fast
+👉 Removes rarely used ones
+
+---
+
+## ⚙️ Advanced Redis Tuning
+
+* `lfu-decay-time` → popularity decay
+* `lfu-log-factor` → frequency precision
+
+👉 Makes cache smarter over time
+
+---
+
+# 🚦 Rate Limiting
+
+* Redis-based
+* Per-IP tracking
+* Prevents abuse
+
+---
+
+# ⚡ Distributed ID Generation
+
+## 🆔 Snowflake Algorithm
+
+* Unique IDs without DB
+* Works across distributed systems
+
+---
+
+# 🌐 Load Balancing
+
+## ⚖️ NGINX
+
+* Reverse proxy
+* Supports:
+
+  * Round Robin
+  * Least Connections
+
+👉 Enables horizontal scaling
+
+---
+
+# 🧠 Shard Routing Internals
+
+---
+
+## 🧵 ShardContext (ThreadLocal)
+
+* Stores shard per request
+* Prevents cross-request bugs
+
+---
+
+## 🔀 Routing Logic
+
+```text
+1. Hash shortCode → shard
+2. Check transaction type
+3. Route to primary/replica
 ```
 
 ---
 
-## ⚠️ Notes
-
-* Do not open `http://localhost:8080/` directly (no frontend is configured).
-* Ensure Redis is running before starting the application.
-* Port used: **8080**
+# 📊 Observability & Logging
 
 ---
 
-## 🧪 Troubleshooting
+## 📌 Request Logs
 
-### Redis not connected
-
-```bash
-docker ps
-```
-
-### Port already in use
-
-```bash
-lsof -i :8080
-kill -9 <PID>
-```
-
-### Build issues
-
-```bash
-mvn clean install -U
+```text
+method, path, status, latency, IP
 ```
 
 ---
 
-## 📦 Tech Stack
+## 📌 DB Routing Logs
 
-* Spring Boot
+```text
+SHARD_DECISION
+ROUTING → primary/replica
+```
+
+---
+
+## 📌 Cache Logs
+
+```text
+cache hit / miss
+```
+
+---
+
+# 📦 Infrastructure
+
+---
+
+## 🐳 Docker-based Setup
+
+* PostgreSQL (Bitnami replication)
 * Redis
-* Maven
-* Docker
+* Custom network
+
+### 🎯 Benefits:
+
+* Consistent environment
+* Easy scaling
+* Production-like setup
 
 ---
 
-## 👨‍💻 Author
+# 🧠 Design Decisions
+
+---
+
+### Why Sharding?
+
+→ Avoid single DB bottleneck
+
+---
+
+### Why Replicas?
+
+→ Faster reads
+
+---
+
+### Why Redis?
+
+→ Reduce DB hits
+
+---
+
+### Why LFU?
+
+→ Keeps popular URLs cached
+
+---
+
+### Why Snowflake?
+
+→ Distributed ID generation
+
+---
+
+# 💣 Key Highlights
+
+* ✅ Horizontal scaling (sharding)
+* ✅ Read scaling (replicas)
+* ✅ Smart caching (LFU)
+* ✅ Rate limiting
+* ✅ Distributed IDs
+* ✅ Docker-based infra
+
+---
+
+# 🧠 One-Line Summary
+
+```text
+Built a scalable URL shortener using sharded PostgreSQL with primary-replica architecture, Redis caching with LFU eviction, and distributed ID generation for efficient read/write separation and high performance.
+```
+
+---
+
+# 👨‍💻 Author
 
 Meet Sinojia
+
+---

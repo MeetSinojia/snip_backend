@@ -16,8 +16,13 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class Url {
 
+    /**
+     * Snowflake ID — set by SnowflakeIdGenerator before persist.
+     * Removed @GeneratedValue: ID is now generated in-process,
+     * enabling single-step INSERT and shard routing before the transaction opens.
+     * See V3__snowflake_id_migration.sql.
+     */
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
     @Column(name = "original_url", nullable = false, columnDefinition = "TEXT")
